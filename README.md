@@ -3,34 +3,34 @@ esp32 code to detect darts impacts on a regular dartboard using ADXL345 accelero
 
 Here's what the script includes:
 
-##Key Features:
-###1. Tap Detection Algorithm:
+## Key Features:
+### 1. Tap Detection Algorithm:
 
 3-axis accelerometer filtering with configurable low-pass filter
 Magnitude-based tap detection with baseline calibration
 Separate handling for single taps and double taps
 Configurable tap duration windows and thresholds
 
-###2. MQTT Communication:
+### 2. MQTT Communication:
 
 Publishes tap events to sensors/tap topic
 Publishes double-tap events to sensors/double_tap topic
 JSON payload includes timestamp, acceleration data, and event details
 
-###3. REST API Configuration:
+### 3. REST API Configuration:
 
 GET /api/config - Get current detector parameters
 POST /api/config - Update detector parameters
 GET /api/sensor - Get current sensor readings
 POST /api/calibrate - Recalibrate baseline
 
-###4. Timestamping:
+### 4. Timestamping:
 
 NTP synchronization for accurate timestamps
 ISO 8601 format timestamps
 Fallback to device uptime if NTP unavailable
 
-##Configuration Parameters:
+## Configuration Parameters:
 
 threshold: Tap detection sensitivity (g-force)
 double_tap_window: Maximum time between taps for double-tap (ms)
@@ -38,7 +38,7 @@ tap_duration_min/max: Valid tap duration range (ms)
 filter_alpha: Low-pass filter coefficient (0-1)
 sensitivity: Overall sensitivity scaling (1-100)
 
-##Setup Requirements:
+## Setup Requirements:
 
 Libraries needed:
 cpp// Install these libraries in Arduino IDE:
@@ -48,7 +48,7 @@ cpp// Install these libraries in Arduino IDE:
 - ArduinoJson
 - SparkFun ADXL345
 
-##Hardware connections:
+## Hardware connections:
 
 ADXL345 VCC → 3.3V
 ADXL345 GND → GND
@@ -56,7 +56,7 @@ ADXL345 SDA → GPIO 21 (ESP32)
 ADXL345 SCL → GPIO 22 (ESP32)
 
 
-##Configuration:
+## Configuration:
 
 Update WiFi credentials
 Set MQTT broker details
@@ -64,7 +64,7 @@ Adjust NTP server if needed
 
 
 
-##Usage Examples:
+## Usage Examples:
 REST API Configuration:
 ```
 # Get current config
