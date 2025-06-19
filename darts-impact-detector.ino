@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <Wire.h>
 #include <time.h>
+#include <ESPmDNS.h>
 #include "Adafruit_MQTT.h"
 #include "Adafruit_MQTT_Client.h"
 #include <Adafruit_Sensor.h>
@@ -13,11 +14,16 @@ const char *ssid = "WIFI_SSID";
 const char *password = "WIFI_PASSWORD";
 
 // MQTT settings
-const char *mqtt_server = "MQTT_SERVER";
-const int mqtt_port = 1883;
+String mqtt_server = "MQTT_SERVER_DEFAULT"; // Default fallback
+int mqtt_port = 1883;
 const char *mqtt_user = "YOUR_MQTT_USER";
 const char *mqtt_password = "YOUR_MQTT_PASSWORD";
 const char *mqtt_topic_tap = "sensors/tap";
+
+// mDNS settings
+const char *mdns_service = "_mqtt";
+const char *mdns_protocol = "_tcp";
+bool mqtt_discovered = false;
 
 // NTP settings
 const char *ntpServer = "pool.ntp.org";
@@ -27,8 +33,8 @@ const int daylightOffset_sec = 3600;
 // Objects
 Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
 WiFiClient client;
-Adafruit_MQTT_Client mqtt(&client, mqtt_server, mqtt_port, mqtt_user, mqtt_password);
-Adafruit_MQTT_Publish tapFeed = Adafruit_MQTT_Publish(&mqtt, mqtt_topic_tap);
+Adafruit_MQTT_Client *mqtt = nullptr;
+Adafruit_MQTT_Publish *tapFeed = nullptr;
 WebServer server(80);
 
 // Tap detection parameters (configurable via REST API)
@@ -47,6 +53,7 @@ struct TapConfig
   float peak_ratio = 1.2;             // Ratio of peak to noise for detection
   bool use_derivative = true;         // Use derivative (jerk) for better detection
   float derivative_threshold = 0.8;   // Threshold for derivative detection
+  bool enable_mdns_discovery = true;  // Enable mDNS discovery for MQTT broker
 } tapConfig;
 
 // Accelerometer data and filtering
@@ -106,6 +113,25 @@ void setup()
   // Connect to WiFi
   setupWiFi();
 
+  // Initialize mDNS
+  if (!MDNS.begin("tap-detector"))
+  {
+    Serial.println("Error setting up MDNS responder!");
+  }
+  else
+  {
+    Serial.println("mDNS responder started");
+  }
+
+  // Discover MQTT broker via mDNS
+  if (tapConfig.enable_mdns_discovery)
+  {
+    discoverMQTTBroker();
+  }
+
+  // Initialize MQTT client
+  initializeMQTT();
+
   // Initialize NTP
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
@@ -119,7 +145,7 @@ void setup()
   // Initialize state tracking
   stateChangeTime = millis();
 
-  Serial.println("ADXL345 Tap Detector Ready (Simplified)");
+  Serial.println("ADXL345 Tap Detector Ready with mDNS Discovery");
 }
 
 int debugCounter = 0;
@@ -171,11 +197,63 @@ void setupWiFi()
   Serial.println(WiFi.localIP());
 }
 
+bool discoverMQTTBroker()
+{
+  Serial.println("Discovering MQTT broker via mDNS...");
+
+  int n = MDNS.queryService(mdns_service, mdns_protocol);
+  if (n == 0)
+  {
+    Serial.println("No MQTT services found via mDNS");
+    return false;
+  }
+  else
+  {
+    Serial.printf("Found %d MQTT service(s):\n", n);
+
+    for (int i = 0; i < n; ++i)
+    {
+      // Get service details
+      String hostname = MDNS.hostname(i);
+      uint16_t port = MDNS.port(i);
+      IPAddress ip = MDNS.address(i);
+
+      Serial.printf("  %d: %s.local:%d\n", i, hostname.c_str(), port);
+      Serial.printf("     IP: %s\n", ip.toString().c_str());
+
+      // Use the first discovered MQTT broker
+      if (i == 0)
+      {
+        mqtt_server = ip.toString();
+        mqtt_port = port;
+        mqtt_discovered = true;
+        Serial.printf("Using MQTT broker: %s:%d\n", mqtt_server.c_str(), mqtt_port);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void initializeMQTT()
+{
+  if (mqtt != nullptr)
+  {
+    delete mqtt;
+    delete tapFeed;
+  }
+
+  mqtt = new Adafruit_MQTT_Client(&client, mqtt_server.c_str(), mqtt_port, mqtt_user, mqtt_password);
+  tapFeed = new Adafruit_MQTT_Publish(mqtt, mqtt_topic_tap);
+
+  Serial.printf("MQTT client initialized for %s:%d\n", mqtt_server.c_str(), mqtt_port);
+}
+
 void MQTT_connect()
 {
   int8_t ret;
 
-  if (mqtt.connected())
+  if (mqtt == nullptr || mqtt->connected())
   {
     return;
   }
@@ -183,11 +261,11 @@ void MQTT_connect()
   Serial.print("Connecting to MQTT... ");
 
   uint8_t retries = 3;
-  while ((ret = mqtt.connect()) != 0)
+  while ((ret = mqtt->connect()) != 0)
   {
-    Serial.println(mqtt.connectErrorString(ret));
+    Serial.println(mqtt->connectErrorString(ret));
     Serial.println("Retrying MQTT connection in 5 seconds...");
-    mqtt.disconnect();
+    mqtt->disconnect();
     delay(5000);
     retries--;
     if (retries == 0)
@@ -218,6 +296,10 @@ void setupRestAPI()
     doc["peak_ratio"] = tapConfig.peak_ratio;
     doc["use_derivative"] = tapConfig.use_derivative;
     doc["derivative_threshold"] = tapConfig.derivative_threshold;
+    doc["enable_mdns_discovery"] = tapConfig.enable_mdns_discovery;
+    doc["mqtt_server"] = mqtt_server;
+    doc["mqtt_port"] = mqtt_port;
+    doc["mqtt_discovered"] = mqtt_discovered;
     
     String response;
     serializeJson(doc, response);
@@ -243,6 +325,7 @@ void setupRestAPI()
       if (doc.containsKey("peak_ratio")) tapConfig.peak_ratio = doc["peak_ratio"];
       if (doc.containsKey("use_derivative")) tapConfig.use_derivative = doc["use_derivative"];
       if (doc.containsKey("derivative_threshold")) tapConfig.derivative_threshold = doc["derivative_threshold"];
+      if (doc.containsKey("enable_mdns_discovery")) tapConfig.enable_mdns_discovery = doc["enable_mdns_discovery"];
       
       server.send(200, "application/json", "{\"status\":\"updated\"}");
       Serial.println("Configuration updated via REST API");
@@ -282,6 +365,30 @@ void setupRestAPI()
     calibrateBaseline();
     initializeNoiseBuffer();
     server.send(200, "application/json", "{\"status\":\"calibrated\"}"); });
+
+  // Discover MQTT broker
+  server.on("/api/discover-mqtt", HTTP_POST, []()
+            {
+    bool success = discoverMQTTBroker();
+    if (success) {
+      initializeMQTT();
+      server.send(200, "application/json", "{\"status\":\"discovered\",\"server\":\"" + mqtt_server + "\",\"port\":" + String(mqtt_port) + "}");
+    } else {
+      server.send(404, "application/json", "{\"status\":\"not_found\"}");
+    } });
+
+  // Get MQTT broker info
+  server.on("/api/mqtt-info", HTTP_GET, []()
+            {
+    DynamicJsonDocument doc(256);
+    doc["server"] = mqtt_server;
+    doc["port"] = mqtt_port;
+    doc["discovered"] = mqtt_discovered;
+    doc["connected"] = (mqtt != nullptr && mqtt->connected());
+    
+    String response;
+    serializeJson(doc, response);
+    server.send(200, "application/json", response); });
 
   server.begin();
   Serial.println("REST API server started on port 80");
@@ -504,9 +611,9 @@ void handleTapEvent()
   String payload;
   serializeJson(doc, payload);
 
-  if (mqtt.connected())
+  if (mqtt != nullptr && mqtt->connected())
   {
-    tapFeed.publish(payload.c_str());
+    tapFeed->publish(payload.c_str());
   }
 
   Serial.println("TAP detected at " + timestampStr);
